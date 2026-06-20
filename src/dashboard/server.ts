@@ -198,9 +198,9 @@ export function startDashboard(port = parseInt(process.env.PORT || '3001', 10)):
     broadcast({ type: 'config', payload: config });
   });
 
-  server.listen(port, '0.0.0.0', () => {
-    console.log(`[Dashboard] Server running at http://0.0.0.0:${port}`);
-    console.log(`[Dashboard] WebSocket at ws://0.0.0.0:${port}`);
+  server.listen(port, () => {
+    console.log(`[Dashboard] Server running on port ${port} (IPv4/IPv6)`);
+    console.log(`[Dashboard] WebSocket running on port ${port} (IPv4/IPv6)`);
   });
 
   return server;
