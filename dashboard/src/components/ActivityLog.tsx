@@ -78,12 +78,12 @@ export function ActivityLog({ logs }: ActivityLogProps) {
           </span>
         </h2>
 
-        <div className="flex gap-1">
+        <div className="flex gap-1 overflow-x-auto no-scrollbar pb-1 max-w-full flex-nowrap">
           {FILTER_OPTIONS.map((opt) => (
             <button
               key={opt}
               onClick={() => setFilter(opt)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0 ${
                 filter === opt
                   ? 'bg-gradient-to-r from-poly-purple to-poly-blue text-white shadow-glow-purple'
                   : 'bg-poly-dark text-gray-400 hover:bg-poly-border hover:text-white'

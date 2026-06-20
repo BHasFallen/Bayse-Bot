@@ -6,9 +6,10 @@ interface PositionsPageProps {
     state: BotState | null;
     onClosePosition: (tokenId: string, size: number) => void;
     onRedeemPosition: (conditionId: string) => void;
+    hideHeader?: boolean;
 }
 
-export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition }: PositionsPageProps) {
+export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition, hideHeader = false }: PositionsPageProps) {
     const [closingId, setClosingId] = useState<string | null>(null);
     const [redeemingId, setRedeemingId] = useState<string | null>(null);
 
@@ -32,9 +33,10 @@ export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition
     };
 
     return (
-        <div className="min-h-screen bg-poly-dark text-white">
+        <div className={`${hideHeader ? '' : 'min-h-screen bg-poly-dark'} text-white`}>
             {/* Header */}
-            <header className="glass-card border-b border-white/5 px-6 py-4">
+            {!hideHeader && (
+                <header className="glass-card border-b border-white/5 px-6 py-4">
                 <div className="flex items-center justify-between max-w-[1600px] mx-auto">
                     <div className="flex items-center gap-4">
                         <button onClick={onBack} className="btn btn-secondary">
@@ -60,8 +62,9 @@ export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition
                     </div>
                 </div>
             </header>
+            )}
 
-            <main className="p-6 max-w-[1600px] mx-auto">
+            <main className={`${hideHeader ? 'py-2 px-0' : 'p-6'} max-w-[1600px] mx-auto`}>
                 {positions.length === 0 ? (
                     <div className="panel p-12 text-center">
                         <div className="text-6xl mb-4">📭</div>
@@ -81,7 +84,8 @@ export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition
                                 </h3>
                             </div>
                             <div className="panel-body">
-                                <div className="overflow-x-auto">
+                                {/* Desktop View: Table */}
+                                <div className="hidden md:block overflow-x-auto">
                                     <table className="w-full">
                                         <thead>
                                             <tr className="border-b border-white/10 text-left text-xs text-gray-500 uppercase tracking-wider">
@@ -131,35 +135,111 @@ export function PositionsPage({ onBack, state, onClosePosition, onRedeemPosition
                                                             </div>
                                                         </td>
                                                         <td className="py-4 text-center">
-                                                            <td className="py-4 text-center">
-                                                                {pos.marketClosed ? (
-                                                                    pos.isWinner ? (
-                                                                        <button
-                                                                            onClick={() => handleRedeem(pos)}
-                                                                            disabled={redeemingId === pos.conditionId}
-                                                                            className={`btn ${redeemingId === pos.conditionId ? 'btn-secondary opacity-50' : 'btn-primary bg-green-500 hover:bg-green-600'} text-sm px-4 py-2`}
-                                                                        >
-                                                                            {redeemingId === pos.conditionId ? 'Redeeming...' : '💰 Redeem'}
-                                                                        </button>
-                                                                    ) : (
-                                                                        <span className="text-gray-500 text-sm font-medium">Outcome Lost</span>
-                                                                    )
-                                                                ) : (
+                                                            {pos.marketClosed ? (
+                                                                pos.isWinner ? (
                                                                     <button
-                                                                        onClick={() => handleClose(pos)}
-                                                                        disabled={isClosing}
-                                                                        className={`btn ${isClosing ? 'btn-secondary opacity-50' : 'btn-primary bg-red-500 hover:bg-red-600'} text-sm px-4 py-2`}
+                                                                        onClick={() => handleRedeem(pos)}
+                                                                        disabled={redeemingId === pos.conditionId}
+                                                                        className={`btn ${redeemingId === pos.conditionId ? 'btn-secondary opacity-50' : 'btn-primary bg-green-500 hover:bg-green-600'} text-sm px-4 py-2 mx-auto`}
                                                                     >
-                                                                        {isClosing ? 'Closing...' : 'Close'}
+                                                                        {redeemingId === pos.conditionId ? 'Redeeming...' : '💰 Redeem'}
                                                                     </button>
-                                                                )}
-                                                            </td>
+                                                                ) : (
+                                                                    <span className="text-gray-500 text-sm font-medium">Outcome Lost</span>
+                                                                )
+                                                            ) : (
+                                                                <button
+                                                                    onClick={() => handleClose(pos)}
+                                                                    disabled={isClosing}
+                                                                    className={`btn ${isClosing ? 'btn-secondary opacity-50' : 'btn-primary bg-red-500 hover:bg-red-600'} text-sm px-4 py-2 mx-auto`}
+                                                                >
+                                                                    {isClosing ? 'Closing...' : 'Close'}
+                                                                </button>
+                                                            )}
                                                         </td>
                                                     </tr>
                                                 );
                                             })}
                                         </tbody>
                                     </table>
+                                </div>
+
+                                {/* Mobile View: Cards */}
+                                <div className="block md:hidden space-y-4">
+                                    {positions.map((pos: any) => {
+                                        const pnl = pos.cashPnl ?? 0;
+                                        const pnlPct = (pos.percentPnl ?? 0) * 100;
+                                        const isClosing = closingId === pos.asset;
+
+                                        return (
+                                            <div key={pos.asset} className="bg-poly-dark/40 rounded-xl p-4 border border-white/5 space-y-3">
+                                                <div className="flex items-start justify-between gap-4">
+                                                    <div className="min-w-0">
+                                                        <h4 className="font-semibold text-gray-200 truncate text-sm" title={pos.title}>
+                                                            {pos.title || 'Unknown Market'}
+                                                        </h4>
+                                                        <span className="text-xs text-gray-500 font-mono block truncate mt-0.5">{pos.slug}</span>
+                                                    </div>
+                                                    <span className={`badge flex-shrink-0 text-xs ${pos.outcome === 'Yes' || pos.outcome === 'Up' ? 'badge-green' : 'badge-red'}`}>
+                                                        {pos.outcome}
+                                                    </span>
+                                                </div>
+                                                
+                                                <div className="grid grid-cols-3 gap-2 bg-poly-dark/50 rounded-lg p-2 text-center text-xs font-mono">
+                                                    <div>
+                                                        <div className="text-[9px] text-gray-500 uppercase">Size</div>
+                                                        <div className="text-gray-300 font-semibold mt-0.5">{pos.size?.toFixed(2) ?? '0.00'}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[9px] text-gray-500 uppercase">Avg Px</div>
+                                                        <div className="text-gray-300 mt-0.5">${pos.avgPrice?.toFixed(3) ?? '0.000'}</div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[9px] text-gray-500 uppercase">Cur Px</div>
+                                                        <div className="text-gray-300 mt-0.5">${pos.curPrice?.toFixed(3) ?? '0.000'}</div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex items-center justify-between pt-1">
+                                                    <div>
+                                                        <div className="text-[9px] text-gray-500 uppercase">P&L</div>
+                                                        <div className="flex items-baseline gap-1.5 mt-0.5">
+                                                            <span className={`font-bold font-mono text-sm ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                                {formatPnL(pnl)}
+                                                            </span>
+                                                            <span className={`text-[10px] font-mono ${pnlPct >= 0 ? 'text-green-400/70' : 'text-red-400/70'}`}>
+                                                                ({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)
+                                                            </span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div>
+                                                        {pos.marketClosed ? (
+                                                            pos.isWinner ? (
+                                                                <button
+                                                                    onClick={() => handleRedeem(pos)}
+                                                                    disabled={redeemingId === pos.conditionId}
+                                                                    className={`btn ${redeemingId === pos.conditionId ? 'btn-secondary opacity-50' : 'btn-primary bg-green-500 hover:bg-green-600'} text-xs px-3 py-1.5`}
+                                                                >
+                                                                    {redeemingId === pos.conditionId ? 'Redeeming...' : '💰 Redeem'}
+                                                                </button>
+                                                            ) : (
+                                                                <span className="text-gray-500 text-xs font-medium">Outcome Lost</span>
+                                                            )
+                                                        ) : (
+                                                            <button
+                                                                onClick={() => handleClose(pos)}
+                                                                disabled={isClosing}
+                                                                className={`btn ${isClosing ? 'btn-secondary opacity-50' : 'btn-primary bg-red-500 hover:bg-red-600'} text-xs px-3 py-1.5`}
+                                                            >
+                                                                {isClosing ? 'Closing...' : 'Close'}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         </div>

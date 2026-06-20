@@ -101,7 +101,7 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
         </div>
 
         {/* Right: Stats + Wallet */}
-        <div className="flex items-center gap-6">
+        <div className="hidden lg:flex items-center gap-6">
           {/* History Button */}
           <button
             onClick={onHistoryClick}
