@@ -61,15 +61,10 @@ export function Header({ state, config, connected, onHistoryClick, onPositionsCl
         <div className="flex items-center gap-6">
           {/* Logo */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-xl shadow-glow-purple">
-              🤖
+            <div className="text-xl font-heading text-poly-purple tracking-widest font-bold">
+              /PolymarketBot/
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-white tracking-tight">
-                Polymarket Bot
-              </h1>
-              <div className="text-xs text-gray-500">v3.0 Professional</div>
-            </div>
+            <div className="text-[10px] text-gray-500 font-mono pt-1">v3.0</div>
           </div>
 
           {/* Status Badges */}
