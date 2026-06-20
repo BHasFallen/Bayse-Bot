@@ -6,7 +6,6 @@ import {
   PnLPanel,
   TrendIndicators,
   StrategyGrid,
-  OnChainStats,
   ActivityLog,
   ConfigPanel,
   ConnectionStatus,
@@ -18,6 +17,7 @@ import {
   HistoryPage,
   PositionsPage,
   StrategyControls,
+  SettingsPanel,
 } from './components';
 
 type Page = 'dashboard' | 'history' | 'positions';
@@ -109,6 +109,10 @@ function App() {
     sendCommand('toggleDryRun', { enabled: !isDryRun });
   };
 
+  const handleUpdateConfig = (changes: any) => {
+    sendCommand('updateConfig', changes);
+  };
+
   // History page
   if (currentPage === 'history') {
     return <HistoryPage onBack={() => setCurrentPage('dashboard')} />;
@@ -154,7 +158,7 @@ function App() {
         {/* Row 1: Quick Stats + Balances side by side */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <QuickStats state={state} config={config} />
-          <BalanceCards state={state} />
+          <BalanceCards state={state} config={config} />
         </div>
 
         {/* Row 2: Main Trading Grid - 4 columns */}
@@ -174,18 +178,20 @@ function App() {
             <StrategyControls config={config} onToggle={handleToggleStrategy} />
             <TrendIndicators state={state} />
             <StrategyGrid state={state} config={config} />
-            <OnChainStats state={state} />
           </div>
         </div>
 
         {/* Row 4: Activity Log - Full Width at bottom */}
         <ActivityLog logs={logs} />
 
-        {/* Config - Collapsible at bottom */}
+        {/* Settings Panel — Live Config Editor */}
+        <SettingsPanel config={config} onUpdate={handleUpdateConfig} />
+
+        {/* Config — Collapsible at bottom */}
         <details className="group">
           <summary className="cursor-pointer text-gray-500 text-sm hover:text-gray-400 flex items-center gap-2 py-2">
             <span className="transition-transform group-open:rotate-90">▶</span>
-            Advanced Configuration
+            Advanced Configuration (read-only)
           </summary>
           <div className="mt-2">
             <ConfigPanel config={config} />

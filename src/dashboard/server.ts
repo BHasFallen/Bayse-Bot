@@ -30,11 +30,11 @@ function broadcast(message: WebSocketMessage): void {
   });
 }
 
-export function startDashboard(port = 3001): http.Server {
+export function startDashboard(port = parseInt(process.env.PORT || '3001', 10)): http.Server {
   server = http.createServer((req, res) => {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -44,6 +44,24 @@ export function startDashboard(port = 3001): http.Server {
     }
 
     const url = new URL(req.url || '/', `http://localhost:${port}`);
+
+    // ── Config update endpoint (POST) ──────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/config/update') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body);
+          dashboardEmitter.emit('command', { command: 'updateConfig', payload });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        }
+      });
+      return;
+    }
 
     if (url.pathname === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -129,6 +147,7 @@ export function startDashboard(port = 3001): http.Server {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
   });
+
 
   wss = new WebSocketServer({ server });
 

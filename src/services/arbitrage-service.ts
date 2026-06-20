@@ -27,8 +27,7 @@ import {
 } from './realtime-service-v2.js';
 import { TradingService } from './trading-service.js';
 import { MarketService } from './market-service.js';
-import { CTFClient, type TokenIds } from '../clients/ctf-client.js';
-import { GammaApiClient } from '../clients/gamma-api.js';
+import { BayseApiClient } from '../clients/bayse-api.js';
 import { RateLimiter } from '../core/rate-limiter.js';
 import { createUnifiedCache } from '../core/unified-cache.js';
 import { getEffectivePrices } from '../utils/price-utils.js';
@@ -39,21 +38,25 @@ import type { BookUpdate } from '../core/types.js';
 export interface ArbitrageMarketConfig {
   /** Market name for logging */
   name: string;
-  /** Condition ID */
+  /** Condition ID (Mapped to marketId for compatibility) */
   conditionId: string;
-  /** YES token ID from CLOB API */
+  /** Event ID on Bayse */
+  eventId: string;
+  /** Market ID on Bayse */
+  marketId: string;
+  /** YES token ID / Outcome ID from Bayse */
   yesTokenId: string;
-  /** NO token ID from CLOB API */
+  /** NO token ID / Outcome ID from Bayse */
   noTokenId: string;
   /** Outcome names [YES, NO] */
   outcomes?: [string, string];
 }
 
 export interface ArbitrageServiceConfig {
-  /** Private key for trading (optional for monitor-only mode) */
-  privateKey?: string;
-  /** RPC URL for CTF operations */
-  rpcUrl?: string;
+  /** Bayse API keys and URL */
+  publicKey?: string;
+  secretKey?: string;
+  baseUrl?: string;
   /** Minimum profit threshold (default: 0.005 = 0.5%) */
   profitThreshold?: number;
   /** Minimum trade size in USDC (default: 5) */
@@ -248,14 +251,14 @@ export interface ArbitrageServiceEvents {
 export class ArbitrageService extends EventEmitter {
   private realtimeService: RealtimeServiceV2;
   private marketSubscription: MarketSubscription | null = null;
-  private ctf: CTFClient | null = null;
   private tradingService: TradingService | null = null;
   private rateLimiter: RateLimiter;
 
   private market: ArbitrageMarketConfig | null = null;
-  private config: Omit<Required<ArbitrageServiceConfig>, 'privateKey' | 'rpcUrl' | 'rebalanceInterval'> & {
-    privateKey?: string;
-    rpcUrl?: string;
+  private config: Omit<Required<ArbitrageServiceConfig>, 'publicKey' | 'secretKey' | 'baseUrl' | 'rebalanceInterval'> & {
+    publicKey?: string;
+    secretKey?: string;
+    baseUrl?: string;
     rebalanceIntervalMs: number;
   };
 
@@ -295,8 +298,9 @@ export class ArbitrageService extends EventEmitter {
     super();
 
     this.config = {
-      privateKey: config.privateKey,
-      rpcUrl: config.rpcUrl || 'https://polygon-rpc.com',
+      publicKey: config.publicKey,
+      secretKey: config.secretKey,
+      baseUrl: config.baseUrl,
       profitThreshold: config.profitThreshold ?? 0.005,
       minTradeSize: config.minTradeSize ?? 5,
       maxTradeSize: config.maxTradeSize ?? 100,
@@ -320,17 +324,13 @@ export class ArbitrageService extends EventEmitter {
     this.rateLimiter = new RateLimiter();
     this.realtimeService = new RealtimeServiceV2({ debug: false });
 
-    // Initialize trading clients if private key provided
-    if (this.config.privateKey) {
-      this.ctf = new CTFClient({
-        privateKey: this.config.privateKey,
-        rpcUrl: this.config.rpcUrl,
-      });
-
+    // Initialize trading clients if public key/secret key provided
+    if (this.config.publicKey && this.config.secretKey) {
       const cache = createUnifiedCache();
       this.tradingService = new TradingService(this.rateLimiter, cache, {
-        privateKey: this.config.privateKey,
-        chainId: 137,
+        publicKey: this.config.publicKey,
+        secretKey: this.config.secretKey,
+        baseUrl: this.config.baseUrl,
       });
     }
 
@@ -369,7 +369,7 @@ export class ArbitrageService extends EventEmitter {
     // Initialize trading service
     if (this.tradingService) {
       await this.tradingService.initialize();
-      this.log(`Wallet: ${this.ctf?.getAddress()}`);
+      this.log(`Wallet Public Key: ${this.config.publicKey}`);
       await this.updateBalance();
       this.log(`USDC Balance: ${this.balance.usdc.toFixed(2)}`);
       this.log(`YES Tokens: ${this.balance.yesTokens.toFixed(2)}`);
@@ -403,7 +403,7 @@ export class ArbitrageService extends EventEmitter {
         onOrderbook: (book: OrderbookSnapshot) => {
           // Convert OrderbookSnapshot to BookUpdate format
           const bookUpdate: BookUpdate = {
-            assetId: book.assetId,
+            assetId: book.outcomeId,
             bids: book.bids,
             asks: book.asks,
             timestamp: book.timestamp,
@@ -570,7 +570,7 @@ export class ArbitrageService extends EventEmitter {
    * Manually execute an arbitrage opportunity
    */
   async execute(opportunity: ArbitrageOpportunity): Promise<ArbitrageExecutionResult> {
-    if (!this.ctf || !this.tradingService || !this.market) {
+    if (!this.tradingService || !this.market) {
       return {
         success: false,
         type: opportunity.type,
@@ -696,7 +696,7 @@ export class ArbitrageService extends EventEmitter {
    * Execute a rebalance action
    */
   async rebalance(action?: RebalanceAction): Promise<RebalanceResult> {
-    if (!this.ctf || !this.tradingService || !this.market) {
+    if (!this.tradingService || !this.market) {
       return {
         success: false,
         action: action || { type: 'none', amount: 0, reason: 'No trading config', priority: 0 },
@@ -712,33 +712,29 @@ export class ArbitrageService extends EventEmitter {
     this.log(`\n🔄 Rebalance: ${rebalanceAction.type.toUpperCase()} ${rebalanceAction.amount.toFixed(2)}`);
     this.log(`   Reason: ${rebalanceAction.reason}`);
 
+    const bayseClient = this.tradingService.getBayseClient();
+
     try {
       let txHash: string | undefined;
 
       switch (rebalanceAction.type) {
         case 'split': {
-          const result = await this.ctf.split(this.market.conditionId, rebalanceAction.amount.toString());
-          txHash = result.txHash;
-          this.log(`   ✅ Split TX: ${txHash}`);
+          const result = await bayseClient.mintShares(this.market.marketId, rebalanceAction.amount);
+          txHash = result.id || 'bayse-mint';
+          this.log(`   ✅ Split (Mint) TX: ${txHash}`);
           break;
         }
         case 'merge': {
-          const tokenIds: TokenIds = {
-            yesTokenId: this.market.yesTokenId,
-            noTokenId: this.market.noTokenId,
-          };
-          const result = await this.ctf.mergeByTokenIds(
-            this.market.conditionId,
-            tokenIds,
-            rebalanceAction.amount.toString()
-          );
-          txHash = result.txHash;
-          this.log(`   ✅ Merge TX: ${txHash}`);
+          const result = await bayseClient.burnShares(this.market.marketId, rebalanceAction.amount);
+          txHash = result.id || 'bayse-burn';
+          this.log(`   ✅ Merge (Burn) TX: ${txHash}`);
           break;
         }
         case 'sell_yes': {
           const result = await this.tradingService.createMarketOrder({
-            tokenId: this.market.yesTokenId,
+            eventId: this.market.eventId,
+            marketId: this.market.marketId,
+            outcomeId: this.market.yesTokenId,
             side: 'SELL',
             amount: rebalanceAction.amount,
             orderType: 'FOK',
@@ -751,7 +747,9 @@ export class ArbitrageService extends EventEmitter {
         }
         case 'sell_no': {
           const result = await this.tradingService.createMarketOrder({
-            tokenId: this.market.noTokenId,
+            eventId: this.market.eventId,
+            marketId: this.market.marketId,
+            outcomeId: this.market.noTokenId,
             side: 'SELL',
             amount: rebalanceAction.amount,
             orderType: 'FOK',
@@ -793,7 +791,7 @@ export class ArbitrageService extends EventEmitter {
       throw new Error('No market specified');
     }
 
-    if (!this.ctf) {
+    if (!this.tradingService) {
       return {
         market: targetMarket,
         yesBalance: 0,
@@ -802,73 +800,83 @@ export class ArbitrageService extends EventEmitter {
         unpairedYes: 0,
         unpairedNo: 0,
         merged: false,
-        error: 'CTF client not configured',
+        error: 'Trading client not configured',
       };
     }
 
-    const tokenIds: TokenIds = {
-      yesTokenId: targetMarket.yesTokenId,
-      noTokenId: targetMarket.noTokenId,
-    };
+    const bayseClient = this.tradingService.getBayseClient();
 
-    // Get token balances
-    const positions = await this.ctf.getPositionBalanceByTokenIds(targetMarket.conditionId, tokenIds);
-    const yesBalance = parseFloat(positions.yesBalance);
-    const noBalance = parseFloat(positions.noBalance);
+    try {
+      // Get positions from portfolio
+      const portfolio = await bayseClient.getPortfolio();
+      const yesPos = portfolio.positions.find((p: any) => p.outcomeId === targetMarket.yesTokenId);
+      const noPos = portfolio.positions.find((p: any) => p.outcomeId === targetMarket.noTokenId);
 
-    const pairedTokens = Math.min(yesBalance, noBalance);
-    const unpairedYes = yesBalance - pairedTokens;
-    const unpairedNo = noBalance - pairedTokens;
+      const yesBalance = yesPos ? parseFloat(yesPos.quantity || yesPos.balance || '0') : 0;
+      const noBalance = noPos ? parseFloat(noPos.quantity || noPos.balance || '0') : 0;
 
-    this.log(`\n📊 Position: ${targetMarket.name}`);
-    this.log(`   YES: ${yesBalance.toFixed(6)}`);
-    this.log(`   NO: ${noBalance.toFixed(6)}`);
-    this.log(`   Paired: ${pairedTokens.toFixed(6)} (can merge → $${pairedTokens.toFixed(2)} USDC)`);
+      const pairedTokens = Math.min(yesBalance, noBalance);
+      const unpairedYes = yesBalance - pairedTokens;
+      const unpairedNo = noBalance - pairedTokens;
 
-    if (unpairedYes > 0.001) {
-      this.log(`   ⚠️ Unpaired YES: ${unpairedYes.toFixed(6)}`);
-    }
-    if (unpairedNo > 0.001) {
-      this.log(`   ⚠️ Unpaired NO: ${unpairedNo.toFixed(6)}`);
-    }
+      this.log(`\n📊 Position: ${targetMarket.name}`);
+      this.log(`   YES: ${yesBalance.toFixed(6)}`);
+      this.log(`   NO: ${noBalance.toFixed(6)}`);
+      this.log(`   Paired: ${pairedTokens.toFixed(6)} (can merge → $${pairedTokens.toFixed(2)} USD)`);
 
-    const result: SettleResult = {
-      market: targetMarket,
-      yesBalance,
-      noBalance,
-      pairedTokens,
-      unpairedYes,
-      unpairedNo,
-      merged: false,
-    };
-
-    // Execute merge if requested and we have enough pairs
-    if (execute && pairedTokens >= 1) {
-      const mergeAmount = Math.floor(pairedTokens * 1e6) / 1e6;
-      this.log(`\n🔄 Merging ${mergeAmount.toFixed(6)} token pairs...`);
-
-      try {
-        const mergeResult = await this.ctf.mergeByTokenIds(
-          targetMarket.conditionId,
-          tokenIds,
-          mergeAmount.toString()
-        );
-        result.merged = true;
-        result.mergeAmount = mergeAmount;
-        result.mergeTxHash = mergeResult.txHash;
-        result.usdcRecovered = mergeAmount;
-        this.log(`   ✅ Merge TX: ${mergeResult.txHash}`);
-        this.log(`   ✅ Recovered: $${mergeAmount.toFixed(2)} USDC`);
-      } catch (error: any) {
-        result.error = error.message;
-        this.log(`   ❌ Merge failed: ${error.message}`);
+      if (unpairedYes > 0.001) {
+        this.log(`   ⚠️ Unpaired YES: ${unpairedYes.toFixed(6)}`);
       }
-    } else if (pairedTokens >= 1) {
-      this.log(`   💡 Run settlePosition(market, true) to recover $${pairedTokens.toFixed(2)} USDC`);
-    }
+      if (unpairedNo > 0.001) {
+        this.log(`   ⚠️ Unpaired NO: ${unpairedNo.toFixed(6)}`);
+      }
 
-    this.emit('settle', result);
-    return result;
+      const result: SettleResult = {
+        market: targetMarket,
+        yesBalance,
+        noBalance,
+        pairedTokens,
+        unpairedYes,
+        unpairedNo,
+        merged: false,
+      };
+
+      // Execute merge if requested and we have enough pairs
+      if (execute && pairedTokens >= 1) {
+        const mergeAmount = Math.floor(pairedTokens * 1e6) / 1e6;
+        this.log(`\n🔄 Merging (burning) ${mergeAmount.toFixed(6)} token pairs...`);
+
+        try {
+          const mergeResult = await bayseClient.burnShares(targetMarket.marketId, mergeAmount);
+          result.merged = true;
+          result.mergeAmount = mergeAmount;
+          result.mergeTxHash = mergeResult.id || 'bayse-burn';
+          result.usdcRecovered = mergeAmount;
+          this.log(`   ✅ Merge Success ID: ${result.mergeTxHash}`);
+          this.log(`   ✅ Recovered: $${mergeAmount.toFixed(2)} USD`);
+        } catch (error: any) {
+          result.error = error.message;
+          this.log(`   ❌ Merge failed: ${error.message}`);
+        }
+      } else if (pairedTokens >= 1) {
+        this.log(`   💡 Run settlePosition(market, true) to recover $${pairedTokens.toFixed(2)} USD`);
+      }
+
+      this.emit('settle', result);
+      return result;
+    } catch (error: any) {
+      this.emit('error', error as Error);
+      return {
+        market: targetMarket,
+        yesBalance: 0,
+        noBalance: 0,
+        pairedTokens: 0,
+        unpairedYes: 0,
+        unpairedNo: 0,
+        merged: false,
+        error: error.message,
+      };
+    }
   }
 
   /**
@@ -925,7 +933,7 @@ export class ArbitrageService extends EventEmitter {
    * ```
    */
   async clearPositions(market: ArbitrageMarketConfig, execute = false): Promise<ClearPositionResult> {
-    if (!this.ctf) {
+    if (!this.tradingService) {
       return {
         market,
         marketStatus: 'unknown',
@@ -934,293 +942,276 @@ export class ArbitrageService extends EventEmitter {
         actions: [],
         totalUsdcRecovered: 0,
         success: false,
-        error: 'CTF client not configured',
+        error: 'Trading client not configured',
       };
     }
 
-    const tokenIds: TokenIds = {
-      yesTokenId: market.yesTokenId,
-      noTokenId: market.noTokenId,
-    };
-
-    // Get token balances
-    const positions = await this.ctf.getPositionBalanceByTokenIds(market.conditionId, tokenIds);
-    const yesBalance = parseFloat(positions.yesBalance);
-    const noBalance = parseFloat(positions.noBalance);
-
-    if (yesBalance < 0.001 && noBalance < 0.001) {
-      this.log(`No positions to clear for ${market.name}`);
-      return {
-        market,
-        marketStatus: 'unknown',
-        yesBalance,
-        noBalance,
-        actions: [],
-        totalUsdcRecovered: 0,
-        success: true,
-      };
-    }
-
-    this.log(`\n🧹 Clearing positions: ${market.name}`);
-    this.log(`   YES: ${yesBalance.toFixed(6)}, NO: ${noBalance.toFixed(6)}`);
-
-    // Check if market is resolved
-    let marketStatus: 'active' | 'resolved' | 'unknown' = 'unknown';
-    // winningOutcome can be any outcome name (YES/NO, Up/Down, Team1/Team2, etc.)
-    let winningOutcome: string | undefined;
+    const bayseClient = this.tradingService.getBayseClient();
 
     try {
-      const resolution = await this.ctf.getMarketResolution(market.conditionId);
-      marketStatus = resolution.isResolved ? 'resolved' : 'active';
-      winningOutcome = resolution.winningOutcome;
-      this.log(`   Status: ${marketStatus}${resolution.isResolved ? ` (Winner: ${winningOutcome})` : ''}`);
-    } catch {
-      // If we can't determine resolution, try to get market status from MarketService
+      // Get positions from portfolio
+      const portfolio = await bayseClient.getPortfolio();
+      const yesPos = portfolio.positions.find((p: any) => p.outcomeId === market.yesTokenId);
+      const noPos = portfolio.positions.find((p: any) => p.outcomeId === market.noTokenId);
+
+      const yesBalance = yesPos ? parseFloat(yesPos.quantity || yesPos.balance || '0') : 0;
+      const noBalance = noPos ? parseFloat(noPos.quantity || noPos.balance || '0') : 0;
+
+      if (yesBalance < 0.001 && noBalance < 0.001) {
+        this.log(`No positions to clear for ${market.name}`);
+        return {
+          market,
+          marketStatus: 'unknown',
+          yesBalance,
+          noBalance,
+          actions: [],
+          totalUsdcRecovered: 0,
+          success: true,
+        };
+      }
+
+      this.log(`\n🧹 Clearing positions: ${market.name}`);
+      this.log(`   YES: ${yesBalance.toFixed(6)}, NO: ${noBalance.toFixed(6)}`);
+
+      // Check if market is resolved
+      let marketStatus: 'active' | 'resolved' | 'unknown' = 'unknown';
+      let winningOutcome: string | undefined;
+
       try {
-        const cache = createUnifiedCache();
-        const tempMarketService = new MarketService(undefined, undefined, this.rateLimiter, cache);
-        const clobMarket = await tempMarketService.getClobMarket(market.conditionId);
-        if (clobMarket) {
-          marketStatus = clobMarket.closed ? 'resolved' : 'active';
-          this.log(`   Status: ${marketStatus} (from MarketService)`);
-        } else {
-          this.log(`   Status: unknown (market not found, assuming active)`);
-          marketStatus = 'active';
+        const eventObj = await bayseClient.getEvent(market.eventId);
+        const mkt = eventObj.markets.find((m) => m.id === market.marketId);
+        if (mkt) {
+          marketStatus = mkt.status === 'resolved' ? 'resolved' : 'active';
+          if (mkt.status === 'resolved') {
+            if (mkt.outcome1Price === 1.0) {
+              winningOutcome = 'YES';
+            } else if (mkt.outcome2Price === 1.0) {
+              winningOutcome = 'NO';
+            }
+          }
         }
       } catch {
-        this.log(`   Status: unknown (assuming active)`);
         marketStatus = 'active';
       }
-    }
 
-    const actions: ClearAction[] = [];
-    let totalUsdcRecovered = 0;
+      const actions: ClearAction[] = [];
+      let totalUsdcRecovered = 0;
 
-    if (!execute) {
-      // Dry run - calculate expected actions
+      if (!execute) {
+        // Dry run - calculate expected actions
+        if (marketStatus === 'resolved' && winningOutcome) {
+          const winningBalance = winningOutcome === 'YES' ? yesBalance : noBalance;
+          if (winningBalance >= 0.001) {
+            actions.push({
+              type: 'redeem',
+              amount: winningBalance,
+              usdcResult: winningBalance,
+              success: true,
+            });
+            totalUsdcRecovered = winningBalance;
+          }
+        } else {
+          const pairedTokens = Math.min(yesBalance, noBalance);
+          const unpairedYes = yesBalance - pairedTokens;
+          const unpairedNo = noBalance - pairedTokens;
+
+          if (pairedTokens >= 1) {
+            actions.push({
+              type: 'merge',
+              amount: pairedTokens,
+              usdcResult: pairedTokens,
+              success: true,
+            });
+            totalUsdcRecovered += pairedTokens;
+          }
+
+          if (unpairedYes >= this.config.minTradeSize) {
+            const estimatedPrice = 0.5;
+            actions.push({
+              type: 'sell_yes',
+              amount: unpairedYes,
+              usdcResult: unpairedYes * estimatedPrice,
+              success: true,
+            });
+            totalUsdcRecovered += unpairedYes * estimatedPrice;
+          }
+
+          if (unpairedNo >= this.config.minTradeSize) {
+            const estimatedPrice = 0.5;
+            actions.push({
+              type: 'sell_no',
+              amount: unpairedNo,
+              usdcResult: unpairedNo * estimatedPrice,
+              success: true,
+            });
+            totalUsdcRecovered += unpairedNo * estimatedPrice;
+          }
+        }
+
+        this.log(`   📋 Plan: ${actions.length} actions, ~$${totalUsdcRecovered.toFixed(2)} USD`);
+        for (const action of actions) {
+          this.log(`      - ${action.type}: ${action.amount.toFixed(4)} → ~$${action.usdcResult.toFixed(2)}`);
+        }
+
+        return {
+          market,
+          marketStatus,
+          yesBalance,
+          noBalance,
+          actions,
+          totalUsdcRecovered,
+          success: true,
+        };
+      }
+
+      // Execute clearing
+      this.log(`   🔄 Executing...`);
+
       if (marketStatus === 'resolved' && winningOutcome) {
-        // Resolved market: redeem winning tokens
         const winningBalance = winningOutcome === 'YES' ? yesBalance : noBalance;
         if (winningBalance >= 0.001) {
           actions.push({
             type: 'redeem',
             amount: winningBalance,
-            usdcResult: winningBalance, // 1 USDC per winning token
+            usdcResult: winningBalance,
+            txHash: 'bayse-auto-resolution',
             success: true,
           });
           totalUsdcRecovered = winningBalance;
+          this.log(`   ✅ Resolved: Payouts are automatic on Bayse. Recovered: $${winningBalance.toFixed(2)} USD`);
         }
       } else {
-        // Active market: merge + sell
         const pairedTokens = Math.min(yesBalance, noBalance);
-        const unpairedYes = yesBalance - pairedTokens;
-        const unpairedNo = noBalance - pairedTokens;
+        let unpairedYes = yesBalance - pairedTokens;
+        let unpairedNo = noBalance - pairedTokens;
 
         if (pairedTokens >= 1) {
-          actions.push({
-            type: 'merge',
-            amount: pairedTokens,
-            usdcResult: pairedTokens,
-            success: true,
-          });
-          totalUsdcRecovered += pairedTokens;
+          const mergeAmount = Math.floor(pairedTokens * 1e6) / 1e6;
+          try {
+            const mergeResult = await bayseClient.burnShares(market.marketId, mergeAmount);
+            actions.push({
+              type: 'merge',
+              amount: mergeAmount,
+              usdcResult: mergeAmount,
+              txHash: mergeResult.id || 'bayse-burn',
+              success: true,
+            });
+            totalUsdcRecovered += mergeAmount;
+            this.log(`   ✅ Merged: ${mergeAmount.toFixed(4)} pairs → $${mergeAmount.toFixed(2)} USD`);
+          } catch (error: any) {
+            actions.push({
+              type: 'merge',
+              amount: mergeAmount,
+              usdcResult: 0,
+              success: false,
+              error: error.message,
+            });
+            this.log(`   ❌ Merge failed: ${error.message}`);
+            unpairedYes = yesBalance;
+            unpairedNo = noBalance;
+          }
         }
 
-        // For unpaired tokens, estimate sell price (assume ~0.5 if unknown)
         if (unpairedYes >= this.config.minTradeSize) {
-          const estimatedPrice = 0.5; // Conservative estimate
-          actions.push({
-            type: 'sell_yes',
-            amount: unpairedYes,
-            usdcResult: unpairedYes * estimatedPrice,
-            success: true,
-          });
-          totalUsdcRecovered += unpairedYes * estimatedPrice;
+          try {
+            const sellAmount = Math.floor(unpairedYes * 1e6) / 1e6;
+            const result = await this.tradingService.createMarketOrder({
+              eventId: market.eventId,
+              marketId: market.marketId,
+              outcomeId: market.yesTokenId,
+              side: 'SELL',
+              amount: sellAmount,
+              orderType: 'FOK',
+            });
+            if (result.success) {
+              const usdcReceived = sellAmount * 0.5;
+              actions.push({
+                type: 'sell_yes',
+                amount: sellAmount,
+                usdcResult: usdcReceived,
+                success: true,
+              });
+              totalUsdcRecovered += usdcReceived;
+              this.log(`   ✅ Sold YES: ${sellAmount.toFixed(4)} → ~$${usdcReceived.toFixed(2)} USD`);
+            } else {
+              throw new Error(result.errorMsg || 'Sell failed');
+            }
+          } catch (error: any) {
+            actions.push({
+              type: 'sell_yes',
+              amount: unpairedYes,
+              usdcResult: 0,
+              success: false,
+              error: error.message,
+            });
+            this.log(`   ❌ Sell YES failed: ${error.message}`);
+          }
         }
 
         if (unpairedNo >= this.config.minTradeSize) {
-          const estimatedPrice = 0.5;
-          actions.push({
-            type: 'sell_no',
-            amount: unpairedNo,
-            usdcResult: unpairedNo * estimatedPrice,
-            success: true,
-          });
-          totalUsdcRecovered += unpairedNo * estimatedPrice;
+          try {
+            const sellAmount = Math.floor(unpairedNo * 1e6) / 1e6;
+            const result = await this.tradingService.createMarketOrder({
+              eventId: market.eventId,
+              marketId: market.marketId,
+              outcomeId: market.noTokenId,
+              side: 'SELL',
+              amount: sellAmount,
+              orderType: 'FOK',
+            });
+            if (result.success) {
+              const usdcReceived = sellAmount * 0.5;
+              actions.push({
+                type: 'sell_no',
+                amount: sellAmount,
+                usdcResult: usdcReceived,
+                success: true,
+              });
+              totalUsdcRecovered += usdcReceived;
+              this.log(`   ✅ Sold NO: ${sellAmount.toFixed(4)} → ~$${usdcReceived.toFixed(2)} USD`);
+            } else {
+              throw new Error(result.errorMsg || 'Sell failed');
+            }
+          } catch (error: any) {
+            actions.push({
+              type: 'sell_no',
+              amount: unpairedNo,
+              usdcResult: 0,
+              success: false,
+              error: error.message,
+            });
+            this.log(`   ❌ Sell NO failed: ${error.message}`);
+          }
         }
       }
 
-      this.log(`   📋 Plan: ${actions.length} actions, ~$${totalUsdcRecovered.toFixed(2)} USDC`);
-      for (const action of actions) {
-        this.log(`      - ${action.type}: ${action.amount.toFixed(4)} → ~$${action.usdcResult.toFixed(2)}`);
-      }
+      const allSuccess = actions.every((a) => a.success);
+      this.log(`   📊 Result: ${actions.filter((a) => a.success).length}/${actions.length} succeeded, $${totalUsdcRecovered.toFixed(2)} recovered`);
 
-      return {
+      const result: ClearPositionResult = {
         market,
         marketStatus,
         yesBalance,
         noBalance,
         actions,
         totalUsdcRecovered,
-        success: true,
+        success: allSuccess,
+      };
+
+      this.emit('settle', result);
+      return result;
+    } catch (error: any) {
+      return {
+        market,
+        marketStatus: 'unknown',
+        yesBalance: 0,
+        noBalance: 0,
+        actions: [],
+        totalUsdcRecovered: 0,
+        success: false,
+        error: error.message,
       };
     }
-
-    // Execute clearing
-    this.log(`   🔄 Executing...`);
-
-    if (marketStatus === 'resolved' && winningOutcome) {
-      // Resolved market: redeem
-      const winningBalance = winningOutcome === 'YES' ? yesBalance : noBalance;
-      if (winningBalance >= 0.001) {
-        try {
-          const redeemResult = await this.ctf.redeem(market.conditionId);
-          actions.push({
-            type: 'redeem',
-            amount: winningBalance,
-            usdcResult: winningBalance,
-            txHash: redeemResult.txHash,
-            success: true,
-          });
-          totalUsdcRecovered = winningBalance;
-          this.log(`   ✅ Redeemed: ${winningBalance.toFixed(4)} tokens → $${winningBalance.toFixed(2)} USDC`);
-        } catch (error: any) {
-          actions.push({
-            type: 'redeem',
-            amount: winningBalance,
-            usdcResult: 0,
-            success: false,
-            error: error.message,
-          });
-          this.log(`   ❌ Redeem failed: ${error.message}`);
-        }
-      }
-    } else {
-      // Active market: merge + sell
-      const pairedTokens = Math.min(yesBalance, noBalance);
-      let unpairedYes = yesBalance - pairedTokens;
-      let unpairedNo = noBalance - pairedTokens;
-
-      // Step 1: Merge paired tokens
-      if (pairedTokens >= 1) {
-        const mergeAmount = Math.floor(pairedTokens * 1e6) / 1e6;
-        try {
-          const mergeResult = await this.ctf.mergeByTokenIds(
-            market.conditionId,
-            tokenIds,
-            mergeAmount.toString()
-          );
-          actions.push({
-            type: 'merge',
-            amount: mergeAmount,
-            usdcResult: mergeAmount,
-            txHash: mergeResult.txHash,
-            success: true,
-          });
-          totalUsdcRecovered += mergeAmount;
-          this.log(`   ✅ Merged: ${mergeAmount.toFixed(4)} pairs → $${mergeAmount.toFixed(2)} USDC`);
-        } catch (error: any) {
-          actions.push({
-            type: 'merge',
-            amount: mergeAmount,
-            usdcResult: 0,
-            success: false,
-            error: error.message,
-          });
-          this.log(`   ❌ Merge failed: ${error.message}`);
-          // Update unpaired amounts since merge failed
-          unpairedYes = yesBalance;
-          unpairedNo = noBalance;
-        }
-      }
-
-      // Step 2: Sell unpaired tokens
-      if (this.tradingService && unpairedYes >= this.config.minTradeSize) {
-        try {
-          const sellAmount = Math.floor(unpairedYes * 1e6) / 1e6;
-          const result = await this.tradingService.createMarketOrder({
-            tokenId: market.yesTokenId,
-            side: 'SELL',
-            amount: sellAmount,
-            orderType: 'FOK',
-          });
-          if (result.success) {
-            // Estimate USDC received (conservative estimate since we don't have exact trade info)
-            const usdcReceived = sellAmount * 0.5; // Assume ~0.5 average price
-            actions.push({
-              type: 'sell_yes',
-              amount: sellAmount,
-              usdcResult: usdcReceived,
-              success: true,
-            });
-            totalUsdcRecovered += usdcReceived;
-            this.log(`   ✅ Sold YES: ${sellAmount.toFixed(4)} → ~$${usdcReceived.toFixed(2)} USDC`);
-          } else {
-            throw new Error(result.errorMsg || 'Sell failed');
-          }
-        } catch (error: any) {
-          actions.push({
-            type: 'sell_yes',
-            amount: unpairedYes,
-            usdcResult: 0,
-            success: false,
-            error: error.message,
-          });
-          this.log(`   ❌ Sell YES failed: ${error.message}`);
-        }
-      }
-
-      if (this.tradingService && unpairedNo >= this.config.minTradeSize) {
-        try {
-          const sellAmount = Math.floor(unpairedNo * 1e6) / 1e6;
-          const result = await this.tradingService.createMarketOrder({
-            tokenId: market.noTokenId,
-            side: 'SELL',
-            amount: sellAmount,
-            orderType: 'FOK',
-          });
-          if (result.success) {
-            // Estimate USDC received (conservative estimate since we don't have exact trade info)
-            const usdcReceived = sellAmount * 0.5; // Assume ~0.5 average price
-            actions.push({
-              type: 'sell_no',
-              amount: sellAmount,
-              usdcResult: usdcReceived,
-              success: true,
-            });
-            totalUsdcRecovered += usdcReceived;
-            this.log(`   ✅ Sold NO: ${sellAmount.toFixed(4)} → ~$${usdcReceived.toFixed(2)} USDC`);
-          } else {
-            throw new Error(result.errorMsg || 'Sell failed');
-          }
-        } catch (error: any) {
-          actions.push({
-            type: 'sell_no',
-            amount: unpairedNo,
-            usdcResult: 0,
-            success: false,
-            error: error.message,
-          });
-          this.log(`   ❌ Sell NO failed: ${error.message}`);
-        }
-      }
-    }
-
-    const allSuccess = actions.every((a) => a.success);
-    this.log(`   📊 Result: ${actions.filter((a) => a.success).length}/${actions.length} succeeded, $${totalUsdcRecovered.toFixed(2)} recovered`);
-
-    const result: ClearPositionResult = {
-      market,
-      marketStatus,
-      yesBalance,
-      noBalance,
-      actions,
-      totalUsdcRecovered,
-      success: allSuccess,
-    };
-
-    this.emit('settle', result);
-    return result;
   }
 
   /**
@@ -1318,7 +1309,7 @@ export class ArbitrageService extends EventEmitter {
    * This is critical when one side of a parallel order fails
    */
   private async fixImbalanceIfNeeded(): Promise<void> {
-    if (!this.config.autoFixImbalance || !this.ctf || !this.tradingService || !this.market) return;
+    if (!this.config.autoFixImbalance || !this.tradingService || !this.market) return;
 
     await this.updateBalance();
     const imbalance = this.balance.yesTokens - this.balance.noTokens;
@@ -1335,7 +1326,9 @@ export class ArbitrageService extends EventEmitter {
       if (imbalance > 0) {
         // Sell excess YES
         const result = await this.tradingService.createMarketOrder({
-          tokenId: this.market.yesTokenId,
+          eventId: this.market.eventId,
+          marketId: this.market.marketId,
+          outcomeId: this.market.yesTokenId,
           side: 'SELL',
           amount: sellAmount,
           orderType: 'FOK',
@@ -1346,7 +1339,9 @@ export class ArbitrageService extends EventEmitter {
       } else {
         // Sell excess NO
         const result = await this.tradingService.createMarketOrder({
-          tokenId: this.market.noTokenId,
+          eventId: this.market.eventId,
+          marketId: this.market.marketId,
+          outcomeId: this.market.noTokenId,
           side: 'SELL',
           amount: sellAmount,
           orderType: 'FOK',
@@ -1361,23 +1356,28 @@ export class ArbitrageService extends EventEmitter {
   }
 
   private async updateBalance(): Promise<void> {
-    if (!this.ctf || !this.market) return;
+    if (!this.tradingService || !this.market) return;
+    const bayseClient = this.tradingService.getBayseClient();
 
     try {
-      const tokenIds: TokenIds = {
-        yesTokenId: this.market.yesTokenId,
-        noTokenId: this.market.noTokenId,
-      };
-
-      const [usdcBalance, positions] = await Promise.all([
-        this.ctf.getUsdcBalance(),
-        this.ctf.getPositionBalanceByTokenIds(this.market.conditionId, tokenIds),
+      const [assetsRes, portfolioRes] = await Promise.all([
+        bayseClient.getAssets(),
+        bayseClient.getPortfolio(),
       ]);
 
+      const usdAsset = assetsRes.assets.find(a => a.symbol === 'USD');
+      const usdc = usdAsset ? usdAsset.availableBalance : 0;
+
+      const yesPos = portfolioRes.positions.find((p: any) => p.outcomeId === this.market!.yesTokenId);
+      const noPos = portfolioRes.positions.find((p: any) => p.outcomeId === this.market!.noTokenId);
+
+      const yesTokens = yesPos ? parseFloat(yesPos.quantity || yesPos.balance || '0') : 0;
+      const noTokens = noPos ? parseFloat(noPos.quantity || noPos.balance || '0') : 0;
+
       this.balance = {
-        usdc: parseFloat(usdcBalance),
-        yesTokens: parseFloat(positions.yesBalance),
-        noTokens: parseFloat(positions.noBalance),
+        usdc,
+        yesTokens,
+        noTokens,
         lastUpdate: Date.now(),
       };
 
@@ -1405,7 +1405,7 @@ export class ArbitrageService extends EventEmitter {
           size,
           profit: 0,
           txHashes,
-          error: `Insufficient USDC.e: have ${this.balance.usdc.toFixed(2)}, need ${requiredUsdc.toFixed(2)}`,
+          error: `Insufficient USD: have ${this.balance.usdc.toFixed(2)}, need ${requiredUsdc.toFixed(2)}`,
           executionTimeMs: Date.now() - startTime,
         };
       }
@@ -1414,13 +1414,17 @@ export class ArbitrageService extends EventEmitter {
       this.log(`  1. Buying tokens in parallel...`);
       const [buyYesResult, buyNoResult] = await Promise.all([
         this.tradingService!.createMarketOrder({
-          tokenId: this.market!.yesTokenId,
+          eventId: this.market!.eventId,
+          marketId: this.market!.marketId,
+          outcomeId: this.market!.yesTokenId,
           side: 'BUY',
           amount: size * buyYes,
           orderType: 'FOK',
         }),
         this.tradingService!.createMarketOrder({
-          tokenId: this.market!.noTokenId,
+          eventId: this.market!.eventId,
+          marketId: this.market!.marketId,
+          outcomeId: this.market!.noTokenId,
           side: 'BUY',
           amount: size * buyNo,
           orderType: 'FOK',
@@ -1448,11 +1452,8 @@ export class ArbitrageService extends EventEmitter {
         };
       }
 
-      // Merge tokens
-      const tokenIds: TokenIds = {
-        yesTokenId: this.market!.yesTokenId,
-        noTokenId: this.market!.noTokenId,
-      };
+      // Merge (burn) tokens
+      const bayseClient = this.tradingService!.getBayseClient();
 
       // Update balance to get accurate token counts
       await this.updateBalance();
@@ -1460,15 +1461,12 @@ export class ArbitrageService extends EventEmitter {
       const mergeSize = Math.floor(Math.min(size, heldPairs) * 1e6) / 1e6;
 
       if (mergeSize >= this.config.minTradeSize) {
-        this.log(`  2. Merging ${mergeSize.toFixed(2)} pairs...`);
+        this.log(`  2. Merging (burning) ${mergeSize.toFixed(2)} pairs...`);
         try {
-          const mergeResult = await this.ctf!.mergeByTokenIds(
-            this.market!.conditionId,
-            tokenIds,
-            mergeSize.toString()
-          );
-          txHashes.push(mergeResult.txHash);
-          this.log(`     TX: ${mergeResult.txHash}`);
+          const mergeResult = await bayseClient.burnShares(this.market!.marketId, mergeSize);
+          const burnId = mergeResult.id || 'bayse-burn';
+          txHashes.push(burnId);
+          this.log(`     TX: ${burnId}`);
 
           const profit = opportunity.profitRate * mergeSize;
           this.log(`  ✅ Long Arb completed! Profit: ~$${profit.toFixed(2)}`);
@@ -1543,13 +1541,17 @@ export class ArbitrageService extends EventEmitter {
       this.log(`  1. Selling pre-held tokens in parallel...`);
       const [sellYesResult, sellNoResult] = await Promise.all([
         this.tradingService!.createMarketOrder({
-          tokenId: this.market!.yesTokenId,
+          eventId: this.market!.eventId,
+          marketId: this.market!.marketId,
+          outcomeId: this.market!.yesTokenId,
           side: 'SELL',
           amount: size,
           orderType: 'FOK',
         }),
         this.tradingService!.createMarketOrder({
-          tokenId: this.market!.noTokenId,
+          eventId: this.market!.eventId,
+          marketId: this.market!.marketId,
+          outcomeId: this.market!.noTokenId,
           side: 'SELL',
           amount: size,
           orderType: 'FOK',
@@ -1646,128 +1648,118 @@ export class ArbitrageService extends EventEmitter {
 
     // Create temporary API clients for scanning
     const cache = createUnifiedCache();
-    const gammaApi = new GammaApiClient(this.rateLimiter, cache);
-    const tempMarketService = new MarketService(gammaApi, undefined, this.rateLimiter, cache);
-
-    // Fetch active markets from Gamma API
-    const markets = await gammaApi.getMarkets({
-      active: true,
-      closed: false,
-      limit,
+    const bayseClient = new BayseApiClient(this.rateLimiter, cache, {
+      publicKey: this.config.publicKey,
+      secretKey: this.config.secretKey,
+      baseUrl: this.config.baseUrl,
     });
+    const tempMarketService = new MarketService(bayseClient, undefined, this.rateLimiter, cache);
 
-    this.log(`Found ${markets.length} active markets`);
+    // Fetch active events from Bayse
+    let res;
+    try {
+      res = await bayseClient.getEvents({ page: 1, size: limit });
+    } catch (err: any) {
+      this.log(`Error scanning events: ${err.message}`);
+      return [];
+    }
+
+    this.log(`Found ${res.events.length} active events`);
 
     const results: ScanResult[] = [];
 
-    for (const gammaMarket of markets) {
-      try {
-        // Filter by volume
-        const volume24h = gammaMarket.volume24hr || 0;
-        if (volume24h < minVolume24h) continue;
-        if (maxVolume24h && volume24h > maxVolume24h) continue;
-
-        // Filter by keywords
-        if (keywords.length > 0) {
-          const marketText = `${gammaMarket.question} ${gammaMarket.description || ''}`.toLowerCase();
-          const hasKeyword = keywords.some((kw) => marketText.includes(kw.toLowerCase()));
-          if (!hasKeyword) continue;
-        }
-
-        // Skip non-binary markets
-        if (!gammaMarket.conditionId || gammaMarket.outcomes?.length !== 2) continue;
-
-        // Get market data for token IDs
-        let clobMarket;
+    for (const event of res.events) {
+      for (const mkt of event.markets) {
         try {
-          clobMarket = await tempMarketService.getClobMarket(gammaMarket.conditionId);
-          if (!clobMarket) continue; // Skip if market not found
-        } catch {
-          continue; // Skip if market data not available
+          // Filter by volume
+          const volume24h = event.totalVolume || 0;
+          if (volume24h < minVolume24h) continue;
+          if (maxVolume24h && volume24h > maxVolume24h) continue;
+
+          // Filter by keywords
+          if (keywords.length > 0) {
+            const marketText = `${event.title} ${mkt.title} ${event.description || ''}`.toLowerCase();
+            const hasKeyword = keywords.some((kw) => marketText.includes(kw.toLowerCase()));
+            if (!hasKeyword) continue;
+          }
+
+          // Skip non-binary markets
+          if (mkt.status !== 'open') continue;
+
+          // Get processed orderbook
+          const orderbook = await tempMarketService.getProcessedOrderbook(mkt.id);
+          const { effectivePrices, longArbProfit, shortArbProfit } = orderbook.summary;
+
+          // Determine best arbitrage type
+          let arbType: 'long' | 'short' | 'none' = 'none';
+          let profitRate = 0;
+
+          if (longArbProfit > minProfit && longArbProfit >= shortArbProfit) {
+            arbType = 'long';
+            profitRate = longArbProfit;
+          } else if (shortArbProfit > minProfit) {
+            arbType = 'short';
+            profitRate = shortArbProfit;
+          }
+
+          // Calculate available size (min of both sides)
+          const yesAskSize = orderbook.yes.askSize || 0;
+          const noAskSize = orderbook.no.askSize || 0;
+          const yesBidSize = orderbook.yes.bidSize || 0;
+          const noBidSize = orderbook.no.bidSize || 0;
+
+          const availableSize = arbType === 'long'
+            ? Math.min(yesAskSize, noAskSize)
+            : Math.min(yesBidSize, noBidSize);
+
+          // Calculate score (profit * volume * available_size)
+          const score = profitRate * 100 * Math.log10(volume24h + 1) * Math.min(availableSize, 100) / 100;
+
+          // Create market config
+          const marketConfig: ArbitrageMarketConfig = {
+            name: `${event.title} - ${mkt.title}`,
+            conditionId: mkt.id,
+            eventId: event.id,
+            marketId: mkt.id,
+            yesTokenId: mkt.outcome1Id,
+            noTokenId: mkt.outcome2Id,
+            outcomes: [mkt.outcome1Label, mkt.outcome2Label],
+          };
+
+          const longCost = effectivePrices.effectiveBuyYes + effectivePrices.effectiveBuyNo;
+          const shortRevenue = effectivePrices.effectiveSellYes + effectivePrices.effectiveSellNo;
+
+          let description: string;
+          if (arbType === 'long') {
+            description = `Buy YES@${effectivePrices.effectiveBuyYes.toFixed(4)} + NO@${effectivePrices.effectiveBuyNo.toFixed(4)} = ${longCost.toFixed(4)} → Merge for $1`;
+          } else if (arbType === 'short') {
+            description = `Sell YES@${effectivePrices.effectiveSellYes.toFixed(4)} + NO@${effectivePrices.effectiveSellNo.toFixed(4)} = ${shortRevenue.toFixed(4)}`;
+          } else {
+            description = `No opportunity (Long cost: ${longCost.toFixed(4)}, Short rev: ${shortRevenue.toFixed(4)})`;
+          }
+
+          results.push({
+            market: marketConfig,
+            arbType,
+            profitRate,
+            profitPercent: profitRate * 100,
+            effectivePrices: {
+              buyYes: effectivePrices.effectiveBuyYes,
+              buyNo: effectivePrices.effectiveBuyNo,
+              sellYes: effectivePrices.effectiveSellYes,
+              sellNo: effectivePrices.effectiveSellNo,
+              longCost,
+              shortRevenue,
+            },
+            volume24h,
+            availableSize,
+            score,
+            description,
+          });
+        } catch (error) {
+          // Skip markets with errors
+          continue;
         }
-
-        // Use index-based access instead of name-based (supports Yes/No, Up/Down, Team1/Team2, etc.)
-        const yesToken = clobMarket.tokens[0];  // primary outcome
-        const noToken = clobMarket.tokens[1];   // secondary outcome
-        if (!yesToken || !noToken) continue;
-
-        // Get orderbook data
-        let orderbook;
-        try {
-          orderbook = await tempMarketService.getProcessedOrderbook(gammaMarket.conditionId);
-        } catch {
-          continue; // Skip if orderbook not available
-        }
-
-        const { effectivePrices, longArbProfit, shortArbProfit } = orderbook.summary;
-
-        // Determine best arbitrage type
-        let arbType: 'long' | 'short' | 'none' = 'none';
-        let profitRate = 0;
-
-        if (longArbProfit > minProfit && longArbProfit >= shortArbProfit) {
-          arbType = 'long';
-          profitRate = longArbProfit;
-        } else if (shortArbProfit > minProfit) {
-          arbType = 'short';
-          profitRate = shortArbProfit;
-        }
-
-        // Calculate available size (min of both sides)
-        const yesAskSize = orderbook.yes.askSize || 0;
-        const noAskSize = orderbook.no.askSize || 0;
-        const yesBidSize = orderbook.yes.bidSize || 0;
-        const noBidSize = orderbook.no.bidSize || 0;
-
-        const availableSize = arbType === 'long'
-          ? Math.min(yesAskSize, noAskSize)
-          : Math.min(yesBidSize, noBidSize);
-
-        // Calculate score (profit * volume * available_size)
-        const score = profitRate * 100 * Math.log10(volume24h + 1) * Math.min(availableSize, 100) / 100;
-
-        // Create market config
-        const marketConfig: ArbitrageMarketConfig = {
-          name: gammaMarket.question.slice(0, 60) + (gammaMarket.question.length > 60 ? '...' : ''),
-          conditionId: gammaMarket.conditionId,
-          yesTokenId: yesToken.tokenId,
-          noTokenId: noToken.tokenId,
-          outcomes: gammaMarket.outcomes as [string, string],
-        };
-
-        const longCost = effectivePrices.effectiveBuyYes + effectivePrices.effectiveBuyNo;
-        const shortRevenue = effectivePrices.effectiveSellYes + effectivePrices.effectiveSellNo;
-
-        let description: string;
-        if (arbType === 'long') {
-          description = `Buy YES@${effectivePrices.effectiveBuyYes.toFixed(4)} + NO@${effectivePrices.effectiveBuyNo.toFixed(4)} = ${longCost.toFixed(4)} → Merge for $1`;
-        } else if (arbType === 'short') {
-          description = `Sell YES@${effectivePrices.effectiveSellYes.toFixed(4)} + NO@${effectivePrices.effectiveSellNo.toFixed(4)} = ${shortRevenue.toFixed(4)}`;
-        } else {
-          description = `No opportunity (Long cost: ${longCost.toFixed(4)}, Short rev: ${shortRevenue.toFixed(4)})`;
-        }
-
-        results.push({
-          market: marketConfig,
-          arbType,
-          profitRate,
-          profitPercent: profitRate * 100,
-          effectivePrices: {
-            buyYes: effectivePrices.effectiveBuyYes,
-            buyNo: effectivePrices.effectiveBuyNo,
-            sellYes: effectivePrices.effectiveSellYes,
-            sellNo: effectivePrices.effectiveSellNo,
-            longCost,
-            shortRevenue,
-          },
-          volume24h,
-          availableSize,
-          score,
-          description,
-        });
-      } catch (error) {
-        // Skip markets with errors
-        continue;
       }
     }
 

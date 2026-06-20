@@ -15,6 +15,11 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:dashboard": "cd dashboard && npm run build",
+    "start": "npx tsx bot-with-dashboard.ts",
+    "bot": "npx tsx bot-with-dashboard.ts",
+    "bot:dry": "DRY_RUN=true npx tsx bot-with-dashboard.ts",
+    "bot:live": "DRY_RUN=false npx tsx bot-with-dashboard.ts",
     "prepublishOnly": "pnpm run build",
     "dev": "tsc --watch",
     "test": "vitest run",

@@ -44,9 +44,9 @@ export interface BotState {
   merges: number;
   redeems: number;
   swaps: number;
-  usdcBalance: number;
-  usdcEBalance: number;
-  maticBalance: number;
+  usdBalance: number;
+  ngnBalance: number;
+  totalBalance: number;
   unrealizedPnL: number;
   btcTrend: 'up' | 'down' | 'neutral';
   ethTrend: 'up' | 'down' | 'neutral';
@@ -83,8 +83,10 @@ export interface BotState {
 }
 
 export interface BotConfig {
+  currency: 'USD' | 'NGN';
   capital: {
     totalUsd: number;
+    totalNgn: number;
     maxPerTradePct: number;
     maxPerMarketPct: number;
     maxTotalExposurePct: number;
@@ -98,8 +100,11 @@ export interface BotConfig {
   };
   risk: {
     dailyMaxLossPct: number;
+    monthlyMaxLossPct: number;
+    maxDrawdownFromPeak: number;
     maxConsecutiveLosses: number;
     pauseOnBreachMinutes: number;
+    totalMaxLossPct: number;
   };
   smartMoney: {
     enabled: boolean;
@@ -112,6 +117,9 @@ export interface BotConfig {
   arbitrage: {
     enabled: boolean;
     profitThreshold: number;
+    minTradeSize: number;
+    maxTradeSize: number;
+    minVolume24h: number;
     autoExecute: boolean;
   };
   dipArb: {

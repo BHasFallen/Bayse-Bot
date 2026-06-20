@@ -3,7 +3,6 @@ export { BalanceCards } from './BalanceCards';
 export { PnLPanel } from './PnLPanel';
 export { TrendIndicators } from './TrendIndicators';
 export { StrategyGrid } from './StrategyGrid';
-export { OnChainStats } from './OnChainStats';
 export { ActivityLog } from './ActivityLog';
 export { WalletList } from './WalletList';
 export { ConfigPanel } from './ConfigPanel';
@@ -19,4 +18,5 @@ export { AnimatedCounter } from './AnimatedCounter';
 export { Sparkline } from './Sparkline';
 export { PositionsPage } from './PositionsPage';
 export { StrategyControls } from './StrategyControls';
+export { SettingsPanel } from './SettingsPanel';
 

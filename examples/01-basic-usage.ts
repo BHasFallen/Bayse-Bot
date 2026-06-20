@@ -16,33 +16,39 @@ async function main() {
 
   const sdk = new PolymarketSDK();
 
-  // 1. Get trending markets
-  console.log('1. Fetching trending markets...');
-  const trendingMarkets = await sdk.gammaApi.getTrendingMarkets(5);
-  console.log(`   Found ${trendingMarkets.length} trending markets:\n`);
+  // 1. Get trending events
+  console.log('1. Fetching trending events...');
+  const res = await sdk.bayseClient.getEvents({ trending: true, size: 5 });
+  const trendingEvents = res.events;
+  console.log(`   Found ${trendingEvents.length} trending events:\n`);
 
-  for (const market of trendingMarkets) {
-    console.log(`   - ${market.question}`);
-    console.log(`     Slug: ${market.slug}`);
-    console.log(`     Volume: $${market.volume.toLocaleString()}`);
-    console.log(`     24h Volume: $${market.volume24hr?.toLocaleString() || 'N/A'}`);
-    console.log(`     Prices: Yes=${market.outcomePrices[0]?.toFixed(2)}, No=${market.outcomePrices[1]?.toFixed(2)}`);
+  for (const event of trendingEvents) {
+    console.log(`   - ${event.title}`);
+    console.log(`     Slug: ${event.slug}`);
+    console.log(`     Volume: $${event.totalVolume.toLocaleString()}`);
+    console.log(`     Liquidity: $${event.liquidity.toLocaleString()}`);
+    if (event.markets.length > 0) {
+      const market = event.markets[0];
+      console.log(`     First Market: ${market.title}`);
+      console.log(`     Prices: Yes=${market.outcome1Price.toFixed(2)}, No=${market.outcome2Price.toFixed(2)}`);
+    }
     console.log('');
   }
 
-  // 2. Get unified market details (Gamma + CLOB merged)
-  if (trendingMarkets.length > 0) {
-    const firstMarket = trendingMarkets[0];
-    console.log(`2. Getting unified market details for: ${firstMarket.slug}`);
-    const unifiedMarket = await sdk.getMarket(firstMarket.slug);
+  // 2. Get unified market details
+  if (trendingEvents.length > 0 && trendingEvents[0].markets.length > 0) {
+    const firstEvent = trendingEvents[0];
+    const firstMarket = firstEvent.markets[0];
+    console.log(`2. Getting unified market details for market ID: ${firstMarket.id}`);
+    const unifiedMarket = await sdk.getMarket(firstMarket.id);
     console.log(`   Question: ${unifiedMarket.question}`);
     console.log(`   Condition ID: ${unifiedMarket.conditionId}`);
-    const yesToken = unifiedMarket.tokens.find(t => t.outcome === 'Yes');
-    const noToken = unifiedMarket.tokens.find(t => t.outcome === 'No');
-    console.log(`   YES Token ID: ${yesToken?.tokenId}`);
-    console.log(`   NO Token ID: ${noToken?.tokenId}`);
-    console.log(`   YES Price: ${yesToken?.price.toFixed(4)}`);
-    console.log(`   NO Price: ${noToken?.price.toFixed(4)}`);
+    const yesToken = unifiedMarket.tokens[0];
+    const noToken = unifiedMarket.tokens[1];
+    console.log(`   YES/Outcome 1 Token ID: ${yesToken?.tokenId}`);
+    console.log(`   NO/Outcome 2 Token ID: ${noToken?.tokenId}`);
+    console.log(`   YES/Outcome 1 Price: ${yesToken?.price.toFixed(4)}`);
+    console.log(`   NO/Outcome 2 Price: ${noToken?.price.toFixed(4)}`);
     console.log(`   Source: ${unifiedMarket.source}`);
     console.log('');
 
