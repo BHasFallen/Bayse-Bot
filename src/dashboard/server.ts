@@ -32,6 +32,7 @@ function broadcast(message: WebSocketMessage): void {
 
 export function startDashboard(port = parseInt(process.env.PORT || '3001', 10)): http.Server {
   server = http.createServer((req, res) => {
+    console.log(`[Dashboard] HTTP Request: ${req.method} ${req.url}`);
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
