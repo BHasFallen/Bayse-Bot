@@ -11,6 +11,10 @@ export function HistoryPage({ onBack }: HistoryPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const API_BASE = window.location.port === '5173'
+    ? 'http://localhost:3001'
+    : '';
+
   useEffect(() => {
     fetchHistory();
   }, []);
@@ -18,7 +22,7 @@ export function HistoryPage({ onBack }: HistoryPageProps) {
   const fetchHistory = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:3001/api/history');
+      const response = await fetch(`${API_BASE}/api/history`);
       if (!response.ok) throw new Error('Failed to fetch history');
       const data = await response.json();
       setHistory(data);
@@ -33,7 +37,7 @@ export function HistoryPage({ onBack }: HistoryPageProps) {
 
   const fetchSession = async (sessionId: string) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/history/${sessionId}`);
+      const response = await fetch(`${API_BASE}/api/history/${sessionId}`);
       if (!response.ok) throw new Error('Failed to fetch session');
       const data = await response.json();
       setSelectedSession(data);

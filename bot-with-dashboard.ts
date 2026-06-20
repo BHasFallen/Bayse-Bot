@@ -413,10 +413,11 @@ async function setupArbitrage(sdk: PolymarketSDK) {
 // ============================================================================
 
 async function main() {
+  const port = parseInt(process.env.PORT || '3001', 10);
   console.clear();
   console.log('╔════════════════════════════════════════════════════════════════════╗');
   console.log('║          BAYSE BOT WITH WEB DASHBOARD                              ║');
-  console.log('║  Starting Server: http://localhost:3001                            ║');
+  console.log(`║  Starting Server: http://localhost:${port.toString().padEnd(5)}                            ║`);
   console.log('╚════════════════════════════════════════════════════════════════════╝\n');
 
   if (!process.env.BAYSE_PUBLIC_KEY || !process.env.BAYSE_SECRET_KEY) {
@@ -425,7 +426,7 @@ async function main() {
   }
 
   // Start Dashboard server
-  startDashboard(3001);
+  startDashboard(port);
 
   // Send initial config to dashboard
   const initialDashboardConfig: BotConfig = {
