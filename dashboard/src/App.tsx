@@ -237,7 +237,7 @@ function App() {
       case 'settings':
         return (
           <div className="space-y-4 animate-tab-content">
-            <SettingsPanel config={config} onUpdate={handleUpdateConfig} />
+            <SettingsPanel config={config} onUpdate={handleUpdateConfig} onToggleDryRun={handleToggleDryRun} />
             <details className="group">
               <summary className="cursor-pointer text-gray-500 text-sm hover:text-gray-400 flex items-center gap-2 py-2">
                 <span className="transition-transform group-open:rotate-90">▶</span>
@@ -356,7 +356,7 @@ function App() {
             <ActivityLog logs={logs} />
 
             {/* Settings Panel — Live Config Editor */}
-            <SettingsPanel config={config} onUpdate={handleUpdateConfig} />
+            <SettingsPanel config={config} onUpdate={handleUpdateConfig} onToggleDryRun={handleToggleDryRun} />
 
             {/* Config — Collapsible at bottom */}
             <details className="group">

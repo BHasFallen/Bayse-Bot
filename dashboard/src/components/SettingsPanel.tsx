@@ -4,6 +4,7 @@ import type { BotConfig } from '../types';
 interface SettingsPanelProps {
   config: BotConfig | null;
   onUpdate: (changes: Partial<BotConfig & { capital: any; risk: any; arbitrage: any }>) => void;
+  onToggleDryRun?: () => void;
 }
 
 interface FieldProps {
@@ -43,7 +44,7 @@ function SectionHeader({ icon, title, color }: { icon: string; title: string; co
   );
 }
 
-export function SettingsPanel({ config, onUpdate }: SettingsPanelProps) {
+export function SettingsPanel({ config, onUpdate, onToggleDryRun }: SettingsPanelProps) {
   const [saved, setSaved] = useState(false);
 
   // Capital fields
@@ -118,6 +119,30 @@ export function SettingsPanel({ config, onUpdate }: SettingsPanelProps) {
 
       <div className="panel-body">
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+          {/* Mode Selector */}
+          <div className="md:col-span-2 xl:col-span-4 bg-poly-purple/5 border border-poly-purple/20 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div>
+              <h3 className="font-semibold text-white flex items-center gap-2">
+                <span className="text-lg">⚙️</span>
+                Trading Mode Configuration
+              </h3>
+              <p className="text-xs text-gray-500 mt-1">
+                Toggle between paper trading simulation and live execution with real assets.
+              </p>
+            </div>
+            {onToggleDryRun && (
+              <button
+                onClick={onToggleDryRun}
+                className={`btn font-heading text-xs uppercase tracking-wider py-2.5 px-5 rounded-lg border transition-all ${
+                  config.dryRun
+                    ? 'bg-green-500/10 border-green-500/30 hover:bg-green-500/20 text-green-400'
+                    : 'bg-red-500/10 border-red-500/30 hover:bg-red-500/20 text-red-400 animate-pulse'
+                }`}
+              >
+                {config.dryRun ? '🧪 Simulation (Dry Run)' : '💰 Live Trading'}
+              </button>
+            )}
+          </div>
 
           {/* Currency & Capital */}
           <div className="space-y-3">
