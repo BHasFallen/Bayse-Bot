@@ -31,6 +31,9 @@ function broadcast(message: WebSocketMessage): void {
 }
 
 export function startDashboard(port = parseInt(process.env.PORT || '3001', 10)): http.Server {
+  const distPath = path.resolve(__dirname, '../../dashboard/dist');
+  console.log(`[Dashboard] Serving static files from: ${distPath}`);
+  
   server = http.createServer((req, res) => {
     console.log(`[Dashboard] HTTP Request: ${req.method} ${req.url}`);
     // CORS headers
@@ -115,7 +118,6 @@ export function startDashboard(port = parseInt(process.env.PORT || '3001', 10)):
     }
 
     // Serve static files from dashboard/dist
-    const distPath = path.resolve(__dirname, '../../dashboard/dist');
     let filePath = path.join(distPath, url.pathname === '/' ? 'index.html' : url.pathname);
 
     // Check if file exists
