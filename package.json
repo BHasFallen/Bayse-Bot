@@ -15,7 +15,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "build:dashboard": "cd dashboard && npm run build",
+    "build:dashboard": "cd dashboard && npm install && npm run build",
     "start": "npx tsx bot-with-dashboard.ts",
     "bot": "npx tsx bot-with-dashboard.ts",
     "bot:dry": "DRY_RUN=true npx tsx bot-with-dashboard.ts",
